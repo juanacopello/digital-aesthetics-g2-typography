@@ -1,0 +1,527 @@
+<!-- <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Live Text Silhouette</title>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <script src="https://unpkg.com/ml5@1/dist/ml5.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #f0f0f0;
+      font-family: 'IBM Plex Mono', monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    header {
+      width: 100%; max-width: 700px;
+      padding: 28px 0 14px;
+    }
+    header h1 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: clamp(2.6rem, 7vw, 4rem);
+      letter-spacing: 0.06em;
+      color: #111;
+      line-height: 1;
+    }
+    header p {
+      font-size: 0.6rem; color: #999;
+      letter-spacing: 0.2em; text-transform: uppercase; margin-top: 4px;
+    }
+    .controls {
+      width: 100%; max-width: 700px;
+      display: flex; gap: 10px;
+      padding-bottom: 12px;
+      align-items: stretch;
+    }
+    textarea {
+      flex: 1;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      padding: 10px 14px;
+      color: #111;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+      outline: none;
+      resize: vertical;
+      min-height: 60px;
+      transition: border-color .2s;
+    }
+    textarea:focus { border-color: #111; }
+    textarea::placeholder { color: #bbb; }
+    .btn {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1rem;
+      letter-spacing: 0.1em;
+      background: #111;
+      color: #fff;
+      border: none;
+      border-radius: 3px;
+      padding: 10px 22px;
+      cursor: pointer;
+      transition: opacity .15s;
+      white-space: nowrap;
+    }
+    .btn:hover { opacity: .75; }
+    .canvas-wrap {
+      width: 100%; max-width: 700px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #fff;
+      aspect-ratio: 640/480;
+    }
+    .canvas-wrap canvas { display: block; width: 100% !important; height: 100% !important; }
+    .statusbar {
+      width: 100%; max-width: 700px;
+      display: flex; justify-content: space-between;
+      padding: 8px 2px;
+      font-size: 0.6rem; color: #999;
+      letter-spacing: 0.14em; text-transform: uppercase;
+    }
+    .dot {
+      display: inline-block; width: 6px; height: 6px;
+      border-radius: 50%; background: #ccc;
+      margin-right: 7px; vertical-align: middle;
+      transition: background .3s;
+    }
+    .dot.on { background: #2ecc40; box-shadow: 0 0 7px #2ecc40; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Live Text Silhouette</h1>
+  <p>ml5 segmentation · generative type · p5.js</p>
+</header>
+
+<div class="controls">
+  <textarea id="inputText" placeholder="Your text here…">All the world's a stage, And all the men and women merely players; They have their exits and their entrances; And one man in his time plays many parts, His acts being seven ages.</textarea>
+  <button class="btn" id="freezeBtn">Freeze</button>
+</div>
+
+<div class="canvas-wrap" id="canvasWrap"></div>
+
+<div class="statusbar">
+  <div><span class="dot" id="statusDot"></span><span id="statusMsg">loading model…</span></div>
+  <span id="fpsLabel">— fps</span>
+</div>
+
+<script>
+const W             = 640;
+const H             = 480;
+const KERNING       = 0.5;
+const FONT_SIZE_MIN = 10;
+const FONT_SIZE_MAX = 20;
+const SPACING       = 13;
+
+new p5(function(p) {
+  let video, bodySeg, maskG;
+  let maskReady  = false;
+  let frozen     = false;
+  let frozenMask = null;
+  let frozenVideo= null;
+  let fpsFrames  = 0, fpsLast = 0;
+
+  function setStatus(msg, on=false) {
+    const msgEl = document.getElementById('statusMsg');
+    const dotEl = document.getElementById('statusDot');
+    if (msgEl) msgEl.textContent = msg;
+    if (dotEl) dotEl.className = 'dot' + (on ? ' on' : '');
+  }
+
+  p.preload = function() {
+    bodySeg = ml5.bodySegmentation('SelfieSegmentation');
+  };
+
+  p.setup = function() {
+    let cnv = p.createCanvas(W, H);
+    cnv.parent('canvasWrap');
+    p.pixelDensity(1);
+    p.textFont('Times New Roman');
+    p.textAlign(p.LEFT, p.CENTER);
+
+    document.getElementById('freezeBtn').addEventListener('click', () => {
+      frozen = !frozen;
+      document.getElementById('freezeBtn').textContent = frozen ? 'Unfreeze' : 'Freeze';
+      if (frozen && maskG) {
+        frozenMask = new Uint8Array(maskG.pixels);
+        video.loadPixels();
+        frozenVideo = new Uint8Array(video.pixels);
+      }
+      if (!frozen) p.loop();
+    });
+
+    video = p.createCapture(p.VIDEO);
+    video.size(W, H);
+    video.hide();
+
+    maskG = p.createGraphics(W, H);
+    maskG.pixelDensity(1);
+
+    bodySeg.detectStart(video, (result) => {
+      const m = result?.mask;
+      if (!m) return;
+      maskG.clear();
+      maskG.image(m, 0, 0, W, H);
+      maskG.loadPixels();
+      maskReady = true;
+      setStatus('live', true);
+      if (!frozen) p.loop();
+    });
+
+    setStatus('loading model…');
+    p.background(255);
+    p.noLoop();
+  };
+
+  p.draw = function() {
+    // FPS counter
+    fpsFrames++;
+    const now = performance.now();
+    if (now - fpsLast > 600) {
+      document.getElementById('fpsLabel').textContent =
+        Math.round(fpsFrames / ((now - fpsLast) / 1000)) + ' fps';
+      fpsFrames = 0; fpsLast = now;
+    }
+
+    const inputText = document.getElementById('inputText').value || 'TEXT ';
+
+    p.background(255);
+
+    if (!maskReady) {
+      p.fill(180); p.noStroke();
+      p.textAlign(p.CENTER, p.CENTER);
+      p.textSize(13);
+      p.text('Loading model…', W/2, H/2);
+      p.textAlign(p.LEFT, p.CENTER);
+      return;
+    }
+
+    const maskPixels = frozen && frozenMask ? frozenMask : maskG.pixels;
+
+    let vidPixels;
+    if (frozen && frozenVideo) {
+      vidPixels = frozenVideo;
+    } else {
+      video.loadPixels();
+      vidPixels = video.pixels;
+    }
+
+    let x = 0;
+    let y = SPACING / 2;
+    let counter = 0;
+    p.noStroke();
+
+    while (y < H) {
+      // Mirror x to match webcam flip
+      const imgX = p.constrain(W - 1 - Math.round(x), 0, W - 1);
+      const imgY = p.constrain(Math.round(y), 0, H - 1);
+      const idx  = 4 * (imgY * W + imgX);
+
+      const alpha = maskPixels[idx + 3]; // 0 = background, 255 = person
+
+      // Font size: large inside silhouette, small outside
+      const fontSize = p.map(alpha, 0, 255, FONT_SIZE_MIN, FONT_SIZE_MAX);
+      p.textSize(Math.max(fontSize, 1));
+
+      // Inside silhouette: real camera color. Outside: light grey so it recedes.
+      if (alpha > 20) {
+        p.fill(vidPixels[idx], vidPixels[idx + 1], vidPixels[idx + 2]);
+      } else {
+        p.fill(210);
+      }
+
+      const letter = inputText.charAt(counter % inputText.length);
+      p.text(letter, x, y);
+      const lw = p.textWidth(letter) + KERNING;
+      x += lw;
+
+      if (x + lw >= W) {
+        x = 0;
+        y += SPACING;
+      }
+
+      counter++;
+    }
+
+    if (frozen) p.noLoop();
+  };
+});
+</script>
+</body>
+</html> -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Live Text Silhouette</title>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <script src="https://unpkg.com/ml5@1/dist/ml5.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #f0f0f0;
+      font-family: 'IBM Plex Mono', monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    header {
+      width: 100%; max-width: 700px;
+      padding: 28px 0 14px;
+    }
+    header h1 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: clamp(2.6rem, 7vw, 4rem);
+      letter-spacing: 0.06em;
+      color: #111;
+      line-height: 1;
+    }
+    header p {
+      font-size: 0.6rem; color: #999;
+      letter-spacing: 0.2em; text-transform: uppercase; margin-top: 4px;
+    }
+    .controls {
+      width: 100%; max-width: 700px;
+      display: flex; gap: 10px;
+      padding-bottom: 12px;
+      align-items: stretch;
+    }
+    textarea {
+      flex: 1;
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      padding: 10px 14px;
+      color: #111;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.78rem;
+      letter-spacing: 0.04em;
+      outline: none;
+      resize: vertical;
+      min-height: 60px;
+      transition: border-color .2s;
+    }
+    textarea:focus { border-color: #111; }
+    textarea::placeholder { color: #bbb; }
+    .btn {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1rem;
+      letter-spacing: 0.1em;
+      background: #111;
+      color: #fff;
+      border: none;
+      border-radius: 3px;
+      padding: 10px 22px;
+      cursor: pointer;
+      transition: opacity .15s;
+      white-space: nowrap;
+    }
+    .btn:hover { opacity: .75; }
+    .canvas-wrap {
+      width: 100%; max-width: 700px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #fff;
+      aspect-ratio: 640/480;
+    }
+    .canvas-wrap canvas { display: block; width: 100% !important; height: 100% !important; }
+    .statusbar {
+      width: 100%; max-width: 700px;
+      display: flex; justify-content: space-between;
+      padding: 8px 2px;
+      font-size: 0.6rem; color: #999;
+      letter-spacing: 0.14em; text-transform: uppercase;
+    }
+    .dot {
+      display: inline-block; width: 6px; height: 6px;
+      border-radius: 50%; background: #ccc;
+      margin-right: 7px; vertical-align: middle;
+      transition: background .3s;
+    }
+    .dot.on { background: #2ecc40; box-shadow: 0 0 7px #2ecc40; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Live Text Silhouette</h1>
+  <p>ml5 segmentation · generative type · p5.js</p>
+</header>
+
+<div class="controls">
+  <textarea id="inputText" placeholder="Your text here…">All the world's a stage, And all the men and women merely players; They have their exits and their entrances; And one man in his time plays many parts, His acts being seven ages.</textarea>
+  <button class="btn" id="freezeBtn">Freeze</button>
+</div>
+
+<div class="canvas-wrap" id="canvasWrap"></div>
+
+<div class="statusbar">
+  <div><span class="dot" id="statusDot"></span><span id="statusMsg">loading model…</span></div>
+  <span id="fpsLabel">— fps</span>
+</div>
+
+<script>
+const W             = 640;
+const H             = 480;
+const KERNING       = 0.5;
+const FONT_SIZE_MIN = 10;
+const FONT_SIZE_MAX = 20;
+const SPACING       = 13;
+
+new p5(function(p) {
+  let video, bodySeg, maskG;
+  let maskReady  = false;
+  let frozen     = false;
+  let frozenMask = null;
+  let frozenVideo= null;
+  let fpsFrames  = 0, fpsLast = 0;
+
+  function setStatus(msg, on=false) {
+    const msgEl = document.getElementById('statusMsg');
+    const dotEl = document.getElementById('statusDot');
+    if (msgEl) msgEl.textContent = msg;
+    if (dotEl) dotEl.className = 'dot' + (on ? ' on' : '');
+  }
+
+  p.preload = function() {
+    bodySeg = ml5.bodySegmentation('SelfieSegmentation');
+  };
+
+  p.setup = function() {
+    let cnv = p.createCanvas(W, H);
+    cnv.parent('canvasWrap');
+    p.pixelDensity(1);
+    p.textFont('Times New Roman');
+    p.textAlign(p.LEFT, p.CENTER);
+
+    document.getElementById('freezeBtn').addEventListener('click', () => {
+      frozen = !frozen;
+      document.getElementById('freezeBtn').textContent = frozen ? 'Unfreeze' : 'Freeze';
+      if (frozen && maskG) {
+        frozenMask = new Uint8Array(maskG.pixels);
+        video.loadPixels();
+        frozenVideo = new Uint8Array(video.pixels);
+      }
+      if (!frozen) p.loop();
+    });
+
+    video = p.createCapture(p.VIDEO);
+    video.size(W, H);
+    video.hide();
+
+    maskG = p.createGraphics(W, H);
+    maskG.pixelDensity(1);
+
+    bodySeg.detectStart(video, (result) => {
+      const m = result?.mask;
+      if (!m) return;
+      maskG.clear();
+      maskG.image(m, 0, 0, W, H);
+      maskG.loadPixels();
+      maskReady = true;
+      setStatus('live', true);
+      if (!frozen) p.loop();
+    });
+
+    setStatus('loading model…');
+    p.background(255);
+    p.noLoop();
+  };
+
+  p.draw = function() {
+    // FPS counter
+    fpsFrames++;
+    const now = performance.now();
+    if (now - fpsLast > 600) {
+      document.getElementById('fpsLabel').textContent =
+        Math.round(fpsFrames / ((now - fpsLast) / 1000)) + ' fps';
+      fpsFrames = 0; fpsLast = now;
+    }
+
+    const inputText = document.getElementById('inputText').value || 'TEXT ';
+
+    p.background(255);
+
+    if (!maskReady) {
+      p.fill(180); p.noStroke();
+      p.textAlign(p.CENTER, p.CENTER);
+      p.textSize(13);
+      p.text('Loading model…', W/2, H/2);
+      p.textAlign(p.LEFT, p.CENTER);
+      return;
+    }
+
+    const maskPixels = frozen && frozenMask ? frozenMask : maskG.pixels;
+
+    let vidPixels;
+    if (frozen && frozenVideo) {
+      vidPixels = frozenVideo;
+    } else {
+      video.loadPixels();
+      vidPixels = video.pixels;
+    }
+
+    let x = 0;
+    let y = SPACING / 2;
+    let counter = 0;
+    p.noStroke();
+
+    while (y < H) {
+      // Mirror x to match webcam flip
+      const imgX = p.constrain(W - 1 - Math.round(x), 0, W - 1);
+      const imgY = p.constrain(Math.round(y), 0, H - 1);
+      const idx  = 4 * (imgY * W + imgX);
+
+      const alpha = maskPixels[idx + 3]; // 0 = background, 255 = person
+
+      const cr = vidPixels[idx];
+      const cg = vidPixels[idx + 1];
+      const cb = vidPixels[idx + 2];
+      // Greyscale luminance — same formula as the original sketch
+      const greyscale = cr * 0.222 + cg * 0.707 + cb * 0.071;
+
+      let fontSize;
+      if (alpha > 20) {
+        // Inside silhouette: dark areas → big letters, bright areas → small
+        // Mirrors original: map(greyscale, 0, 255, fontSizeMax, fontSizeMin)
+        fontSize = p.map(greyscale, 0, 255, FONT_SIZE_MAX, FONT_SIZE_MIN);
+        p.fill(cr, cg, cb);
+      } else {
+        // Outside silhouette: fixed minimum size, light grey
+        fontSize = FONT_SIZE_MIN;
+        p.fill(210);
+      }
+      p.textSize(Math.max(fontSize, 1));
+
+      const letter = inputText.charAt(counter % inputText.length);
+      p.text(letter, x, y);
+      const lw = p.textWidth(letter) + KERNING;
+      x += lw;
+
+      if (x + lw >= W) {
+        x = 0;
+        y += SPACING;
+      }
+
+      counter++;
+    }
+
+    if (frozen) p.noLoop();
+  };
+});
+</script>
+</body>
+</html>

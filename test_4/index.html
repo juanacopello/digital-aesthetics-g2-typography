@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Live Text Silhouette</title>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <script src="https://unpkg.com/ml5@1/dist/ml5.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      background: #f2f2f2;
+      font-family: 'IBM Plex Mono', monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    .screen { display: none; width: 100%; max-width: 720px; flex-direction: column; align-items: center; }
+    .screen.active { display: flex; }
+
+    /* ── SCREEN 1: INPUT ── */
+    #screen-input {
+      justify-content: center;
+      min-height: 100vh;
+      padding: 60px 24px;
+      gap: 24px;
+    }
+    #screen-input h1 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: clamp(3rem, 9vw, 5rem);
+      letter-spacing: 0.06em;
+      color: #111;
+      line-height: 1;
+      text-align: center;
+    }
+    #screen-input p {
+      font-size: 0.65rem;
+      color: #999;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      text-align: center;
+    }
+    #phraseInput {
+      width: 100%;
+      background: #fff;
+      border: 2px solid #111;
+      border-radius: 4px;
+      padding: 16px 20px;
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 1rem;
+      color: #111;
+      outline: none;
+      text-align: center;
+      letter-spacing: 0.08em;
+      transition: border-color .2s;
+    }
+    #phraseInput::placeholder { color: #bbb; }
+    #phraseInput:focus { border-color: #555; }
+
+    #inputHint {
+      font-size: 0.6rem;
+      color: #bbb;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      text-align: center;
+    }
+
+    /* ── SCREEN 2: RESULT ── */
+    #screen-result {
+      padding: 40px 24px 60px;
+      gap: 20px;
+    }
+    #screen-result h2 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: clamp(1.8rem, 5vw, 2.8rem);
+      letter-spacing: 0.06em;
+      color: #111;
+      text-align: center;
+    }
+    .canvas-wrap {
+      width: 100%;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      overflow: hidden;
+      background: #fff;
+      aspect-ratio: 640/480;
+    }
+    .canvas-wrap canvas { display: block; width: 100% !important; height: 100% !important; }
+
+    .result-actions { display: flex; gap: 12px; justify-content: center; }
+
+    .btn {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: 1.1rem;
+      letter-spacing: 0.12em;
+      background: #111;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 14px 36px;
+      cursor: pointer;
+      transition: opacity .15s;
+    }
+    .btn:hover { opacity: .75; }
+    .btn.outline {
+      background: transparent;
+      color: #111;
+      border: 2px solid #111;
+    }
+    .btn.outline:hover { background: #111; color: #fff; opacity: 1; }
+  </style>
+</head>
+<body>
+
+<!-- SCREEN 1: type your phrase -->
+<div class="screen active" id="screen-input">
+  <h1>Type Your Phrase</h1>
+  <p>press Enter to render</p>
+  <input type="text" id="phraseInput" placeholder="your phrase here…" autocomplete="off"/>
+  <div id="inputHint">waiting for camera…</div>
+</div>
+
+<!-- SCREEN 2: the result -->
+<div class="screen" id="screen-result">
+  <h2 id="resultTitle">—</h2>
+  <div class="canvas-wrap" id="canvasWrap"></div>
+  <div class="result-actions">
+    <button class="btn outline" id="retakeBtn">Start Over</button>
+    <button class="btn" id="saveBtn">Save PNG</button>
+  </div>
+</div>
+
+<canvas id="captureCanvas" style="display:none"></canvas>
+
+<script>
+const W            = 640, H = 480;
+const KERNING      = 0.5;
+const FONT_SIZE_MIN = 10;
+const FONT_SIZE_MAX = 20;
+const SPACING      = 13;
+
+let currentMaskData = null;
+let phrase = '';
+let p5cam  = null;
+
+const captureCanvas = document.getElementById('captureCanvas');
+const captureCtx    = captureCanvas.getContext('2d');
+captureCanvas.width = W;
+captureCanvas.height = H;
+
+// ─── CAMERA + ML5 ──────────────────────────────────────────────────────────
+function initCameraAndSeg() {
+  p5cam = new p5(function(p) {
+    let vid, bodySeg, maskG;
+
+    p.preload = function() {
+      bodySeg = ml5.bodySegmentation('SelfieSegmentation');
+    };
+
+    p.setup = function() {
+      p.noCanvas();
+      vid = p.createCapture(p.VIDEO);
+      vid.size(W, H);
+      vid.hide();
+
+      maskG = p.createGraphics(W, H);
+      maskG.pixelDensity(1);
+
+      bodySeg.detectStart(vid, (result) => {
+        const m = result?.mask;
+        if (!m) return;
+        maskG.clear();
+        maskG.image(m, 0, 0, W, H);
+        maskG.loadPixels();
+        currentMaskData = new Uint8Array(maskG.pixels);
+        // Keep captureCanvas in sync with the latest frame
+        captureCtx.drawImage(vid.elt, 0, 0, W, H);
+
+        document.getElementById('inputHint').textContent = 'ready — press Enter';
+      });
+    };
+  });
+}
+
+initCameraAndSeg();
+
+// ─── INPUT → CAPTURE → RENDER ──────────────────────────────────────────────
+document.getElementById('phraseInput').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter') return;
+  const val = e.target.value.trim();
+  if (!val) return;
+  phrase = val;
+
+  // Snapshot current frame + mask
+  const imageData = captureCtx.getImageData(0, 0, W, H);
+  const maskData  = currentMaskData ? new Uint8Array(currentMaskData) : null;
+
+  goTo('screen-result');
+  document.getElementById('resultTitle').textContent = phrase;
+  launchSketch(imageData, maskData, phrase);
+});
+
+// ─── RESULT ACTIONS ────────────────────────────────────────────────────────
+document.getElementById('retakeBtn').addEventListener('click', () => {
+  if (window._p5instance) { window._p5instance.remove(); window._p5instance = null; }
+  document.getElementById('phraseInput').value = '';
+  goTo('screen-input');
+});
+
+document.getElementById('saveBtn').addEventListener('click', () => {
+  if (window._p5instance) window._p5instance.saveCanvas('silhouette', 'png');
+});
+
+// ─── SCREEN SWITCHER ───────────────────────────────────────────────────────
+function goTo(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+// ─── P5 SKETCH ─────────────────────────────────────────────────────────────
+function launchSketch(imageData, maskData, text) {
+  if (window._p5instance) { window._p5instance.remove(); window._p5instance = null; }
+  document.getElementById('canvasWrap').innerHTML = '';
+
+  const imagePixels = imageData.data;
+  const maskPixels  = maskData;
+
+  window._p5instance = new p5(function(p) {
+    p.setup = function() {
+      const cnv = p.createCanvas(W, H);
+      cnv.parent('canvasWrap');
+      p.pixelDensity(1);
+      p.textFont('Times New Roman');
+      p.textAlign(p.LEFT, p.CENTER);
+      p.noLoop();
+      p.redraw();
+    };
+
+    p.draw = function() {
+      p.background(255);
+      p.noStroke();
+
+      let x = 0;
+      let y = SPACING / 2;
+      let counter = 0;
+
+      while (y < H) {
+        const imgX = p.constrain(W - 1 - Math.round(x), 0, W - 1);
+        const imgY = p.constrain(Math.round(y), 0, H - 1);
+        const idx  = 4 * (imgY * W + imgX);
+
+        const cr = imagePixels[idx];
+        const cg = imagePixels[idx + 1];
+        const cb = imagePixels[idx + 2];
+        const greyscale = cr * 0.222 + cg * 0.707 + cb * 0.071;
+
+        let fontSize;
+        const inPerson = !maskPixels || maskPixels[idx + 3] > 20;
+
+        if (inPerson) {
+          fontSize = p.map(greyscale, 0, 255, FONT_SIZE_MAX, FONT_SIZE_MIN);
+          p.fill(cr, cg, cb);
+        } else {
+          fontSize = FONT_SIZE_MIN;
+          p.fill(210);
+        }
+
+        p.textSize(Math.max(fontSize, 1));
+        const letter = text.charAt(counter % text.length);
+        p.text(letter, x, y);
+        const lw = p.textWidth(letter) + KERNING;
+        x += lw;
+
+        if (x + lw >= W) { x = 0; y += SPACING; }
+        counter++;
+      }
+    };
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Silhouette Type</title>
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <script src="https://unpkg.com/ml5@1/dist/ml5.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #080808;
+      --panel: #101010;
+      --border: #222;
+      --accent: #e2ff00;
+      --dim: #444;
+      --text: #eee;
+    }
+    html, body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'IBM Plex Mono', monospace;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    header {
+      width: 100%;
+      max-width: 700px;
+      padding: 28px 0 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    header h1 {
+      font-family: 'Bebas Neue', sans-serif;
+      font-size: clamp(2.8rem, 7vw, 4.4rem);
+      letter-spacing: 0.06em;
+      color: var(--accent);
+      line-height: 1;
+    }
+    header p {
+      font-size: 0.62rem;
+      color: var(--dim);
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+    }
+
+    .controls {
+      display: flex;
+      gap: 10px;
+      align-items: stretch;
+      width: 100%;
+      max-width: 700px;
+      padding-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .controls input[type="text"] {
+      flex: 1;
+      min-width: 180px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 10px 14px;
+      color: var(--text);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.88rem;
+      letter-spacing: 0.05em;
+      outline: none;
+      transition: border-color .2s;
+    }
+    .controls input[type="text"]:focus { border-color: var(--accent); }
+    .controls input[type="text"]::placeholder { color: var(--dim); }
+
+    select {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 10px 12px;
+      color: var(--text);
+      font-family: 'IBM Plex Mono', monospace;
+      font-size: 0.72rem;
+      outline: none;
+      cursor: pointer;
+    }
+    select:focus { border-color: var(--accent); }
+
+    .canvas-wrap {
+      position: relative;
+      width: 100%;
+      max-width: 700px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+      background: #000;
+      aspect-ratio: 640 / 480;
+    }
+    .canvas-wrap canvas { display: block; width: 100% !important; height: 100% !important; }
+
+    .statusbar {
+      width: 100%; max-width: 700px;
+      display: flex; justify-content: space-between;
+      padding: 8px 2px;
+      font-size: 0.6rem;
+      color: var(--dim);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+    .dot {
+      display: inline-block;
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--dim); margin-right: 7px;
+      vertical-align: middle;
+      transition: background .3s;
+    }
+    .dot.on { background: var(--accent); box-shadow: 0 0 7px var(--accent); }
+
+    .hint {
+      width: 100%; max-width: 700px;
+      padding: 10px 0 32px;
+      font-size: 0.6rem;
+      color: var(--dim);
+      line-height: 1.9;
+      letter-spacing: 0.05em;
+    }
+    .hint strong { color: var(--accent); }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Silhouette Type</h1>
+  <p>ml5 · selfie segmentation · p5.js</p>
+</header>
+
+<div class="controls">
+  <input type="text" id="phraseInput" placeholder="your phrase here…" value="I EXIST" maxlength="140"/>
+  <select id="fontSize">
+    <option value="9">XS</option>
+    <option value="12" selected>S</option>
+    <option value="16">M</option>
+    <option value="22">L</option>
+  </select>
+  <select id="colorPalette">
+    <option value="white">White</option>
+    <option value="acid">Acid Yellow</option>
+    <option value="pink">Neon Pink</option>
+    <option value="cyan">Cyan</option>
+    <option value="matrix">Matrix</option>
+  </select>
+  <select id="pixelSize">
+    <option value="8">Fine grid</option>
+    <option value="14">Med grid</option>
+    <option value="20" selected>Coarse grid</option>
+    <option value="30">Chunky</option>
+  </select>
+</div>
+
+<div class="canvas-wrap" id="canvasWrap"></div>
+
+<div class="statusbar">
+  <div><span class="dot" id="statusDot"></span><span id="statusMsg">loading model…</span></div>
+  <span id="fpsLabel">— fps</span>
+</div>
+
+<div class="hint">
+  <strong>How it works:</strong> ml5 SelfieSegmentation isolates your body in real time.
+  Inside your silhouette, your phrase repeats endlessly — character by character, cell by cell.
+  Background drifting dots remain. Adjust grid size, font size, and color above.
+</div>
+
+<script>
+// ─── CONFIG ────────────────────────────────────────────────
+const W = 640, H = 480;
+const DOT_COUNT    = 140;
+const DOT_SIZE     = 2;
+const DOT_SPEED_MIN = 0.4;
+const DOT_SPEED_MAX = 1.6;
+
+// ─── PALETTE MAP ───────────────────────────────────────────
+const PALETTES = {
+  white:  [255, 255, 255],
+  acid:   [226, 255, 0],
+  pink:   [255, 50, 120],
+  cyan:   [0, 230, 255],
+  matrix: [0, 210, 70],
+};
+
+// ─── p5 SKETCH ─────────────────────────────────────────────
+new p5(function(p) {
+  let video, bodySeg, maskImg, maskG;
+  let dots = [];
+  let fpsFrames = 0, fpsLast = 0;
+
+  function setStatus(msg, on=false) {
+    document.getElementById('statusMsg').textContent = msg;
+    document.getElementById('statusDot').className = 'dot' + (on ? ' on' : '');
+  }
+
+  p.preload = function() {
+    bodySeg = ml5.bodySegmentation('SelfieSegmentation');
+  };
+
+  p.setup = function() {
+    let cnv = p.createCanvas(W, H);
+    cnv.parent('canvasWrap');
+    p.pixelDensity(1);
+
+    video = p.createCapture(p.VIDEO);
+    video.size(W, H);
+    video.hide();
+
+    maskG = p.createGraphics(W, H);
+    maskG.pixelDensity(1);
+
+    bodySeg.detectStart(video, (result) => {
+      maskImg = result?.mask || null;
+      if (maskImg) {
+        maskG.clear();
+        maskG.image(maskImg, 0, 0, W, H);
+        maskG.loadPixels();
+        setStatus('live', true);
+      }
+    });
+
+    for (let i = 0; i < DOT_COUNT; i++) dots.push(new Dot());
+    setStatus('loading model…');
+    p.background(0);
+  };
+
+  p.draw = function() {
+    // FPS
+    fpsFrames++;
+    const now = performance.now();
+    if (now - fpsLast > 600) {
+      document.getElementById('fpsLabel').textContent =
+        Math.round(fpsFrames / ((now - fpsLast) / 1000)) + ' fps';
+      fpsFrames = 0; fpsLast = now;
+    }
+
+    // ── Background
+    p.background(0);
+
+    // ── Drifting dots (behind figure)
+    for (let d of dots) { d.update(); d.render(); }
+
+    // ── Silhouette
+    if (!maskImg) {
+      p.fill(80); p.noStroke();
+      p.textAlign(p.CENTER, p.CENTER);
+      p.textSize(13);
+      p.text('Loading model…', W/2, H/2);
+      return;
+    }
+
+    drawTextSilhouette();
+  };
+
+  function drawTextSilhouette() {
+    const phrase    = (document.getElementById('phraseInput').value || 'TEXT').toUpperCase() + '  ';
+    const fontSize  = parseInt(document.getElementById('fontSize').value) || 12;
+    const palName   = document.getElementById('colorPalette').value;
+    const CELL      = parseInt(document.getElementById('pixelSize').value) || 20;
+    const col       = PALETTES[palName] || PALETTES.white;
+
+    p.textFont('monospace');
+    p.textSize(fontSize);
+    p.textAlign(p.LEFT, p.TOP);
+    p.noStroke();
+
+    const charW = p.textWidth('M');   // monospace: all same width
+    const lineH = fontSize * 1.2;
+
+    for (let cy = 0; cy < H; cy += CELL) {
+      for (let cx = 0; cx < W; cx += CELL) {
+        // Sample centre of cell from mask
+        const sx = p.constrain(Math.floor(cx + CELL/2), 0, W-1);
+        const sy = p.constrain(Math.floor(cy + CELL/2), 0, H-1);
+        // Mirror (camera is flipped horizontally by default)
+        const mx = W - 1 - sx;
+        const idx = 4 * (sy * W + mx);
+        const alpha = maskG.pixels[idx + 3];
+
+        if (alpha > 128) {
+          // Use pixel position to derive a fixed char index — never changes frame to frame
+          let tx = cx;
+          let ty = cy;
+          let localRow = 0;
+          while (ty < cy + CELL) {
+            let localCol = 0;
+            tx = cx;
+            while (tx < cx + CELL) {
+              // Index purely from canvas position: stable across every frame
+              const globalCol = Math.round(tx / charW);
+              const globalRow = Math.round(ty / lineH);
+              const posIdx = globalRow * Math.ceil(W / charW) + globalCol;
+              const ch = phrase[posIdx % phrase.length];
+              // Subtle brightness variation by position (static)
+              const bv = 0.82 + 0.18 * Math.sin(posIdx * 0.47 + cy * 0.05);
+              p.fill(col[0]*bv, col[1]*bv, col[2]*bv);
+              p.text(ch, tx, ty);
+              tx += charW;
+              localCol++;
+            }
+            ty += lineH;
+            localRow++;
+          }
+        }
+      }
+    }
+  }
+
+  // ─── Drifting dot class ────────────────────────────────
+  class Dot {
+    constructor() { this.reset(true); }
+    reset(randomX=false) {
+      this.y = p.floor(p.random(H));
+      const fromLeft = p.random() < 0.5;
+      this.dir = fromLeft ? 1 : -1;
+      this.speed = p.random(DOT_SPEED_MIN, DOT_SPEED_MAX) * this.dir;
+      this.x = randomX ? p.random(W) : (fromLeft ? -DOT_SIZE - p.random(40) : W + p.random(40));
+      this.alpha = p.random(100, 200);
+    }
+    update() {
+      this.x += this.speed;
+      if (this.dir > 0 && this.x > W + 30) this.reset(false);
+      if (this.dir < 0 && this.x < -30)    this.reset(false);
+    }
+    render() {
+      p.noStroke();
+      p.fill(255, this.alpha);
+      p.rect(this.x, this.y, DOT_SIZE, DOT_SIZE);
+    }
+  }
+});
+</script>
+</body>
+</html>
